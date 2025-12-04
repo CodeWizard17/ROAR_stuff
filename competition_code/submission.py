@@ -70,14 +70,14 @@ def saveDebugData():
     with open(
         f"{os.path.dirname(__file__)}{fname}", "w+"
     ) as outfile:
-        outfile.write("--- Locatons\n")
+        outfile.write("\n--- Debug steer\n")
+        for line in dbg_steer:
+            outfile.write(f"{line}\n")
+        outfile.write("\n--- Locatons\n")
         for line in dbg_carLocations:
             outfile.write(f"{line}\n")
         outfile.write("\n--- wpsToFollow\n")
         for line in dbg_wpsToFollow:
-            outfile.write(f"{line}\n")
-        outfile.write("\n--- Debug steer\n")
-        for line in dbg_steer:
             outfile.write(f"{line}\n")
         outfile.write("\n--- Debug str\n")
         for line in dbg_str2:
@@ -229,7 +229,7 @@ class RoarCompetitionSolution:
         additional_waypoints = (self.maneuverable_waypoints * 2)[
             wp_ind_for_throttle : wp_ind_for_throttle + 300
         ]
-        throttle, brake, gear, speed_data = self.throttle_controller.run(
+        throttle, brake, gear, speed_data, throttle_debug_str = self.throttle_controller.run(
             waypoints_for_throttle,
             vehicle_location,
             current_speed_kmh,
@@ -249,7 +249,7 @@ class RoarCompetitionSolution:
                     self.previous_brake = True
             if current_speed_kmh < 160:
                 self.s3_mult = 0.75
-            print(f"sp {current_speed_kmh} mult{self.s3_mult}")
+            print(f"spd {current_speed_kmh} mult{self.s3_mult} sec={self.current_section}")
         if self.current_waypoint_idx in [802, 803, 804]:
             self.previous_brake = False
 
@@ -269,11 +269,15 @@ class RoarCompetitionSolution:
         if self.current_section == 5:
             steerMultiplier *= 1.1
         if self.current_section in [6]:
-            steerMultiplier = np.clip(steerMultiplier * 3.1, 3.1, 7)
+            steerMultiplier = np.clip(steerMultiplier * 3.2, 3.1, 7)
         if self.current_section == 7:
             steerMultiplier *= 1.75
+
         if self.current_section == 9:
-            steerMultiplier = max(steerMultiplier, 1.5)
+            if self.current_waypoint_idx > 2580:
+                steerMultiplier = max(steerMultiplier, 1.7)
+            else:
+                steerMultiplier = max(steerMultiplier, 1.5)
 
         steer_value = np.clip(steer_control * steerMultiplier, -1, 1)
         # sec3
@@ -304,13 +308,15 @@ class RoarCompetitionSolution:
             self.previous_location = vehicle_location
             s = f"{self.total_dist:.0f}, {current_speed_kmh:.0f}, {speed_data.recommended_speed_now:.0f}, {speed_data.name}, {brake*10:.2f}"
             dbg_str.append(s)
-            s = f"{self.total_dist:.0f}, {control['steer']:.10f}, {steer_control:.6f}, {steerMultiplier:.6f}"
+            wp_ind = (self.lapNum-1)*3000 + self.current_waypoint_idx
+            s = f"{wp_ind:.0f}, {current_speed_kmh:.0f}, {speed_data.recommended_speed_now:.0f}, {speed_data.name}, {brake*10:.2f}"
             dbg_steer.append(s)
 
             wpl = waypoint_to_follow_location
             d = np.linalg.norm(waypoint_to_follow.location - vehicle_location)
             s = f"d {self.total_dist:.0f} t {self.num_ticks} ind {self.current_waypoint_idx} \
-sp {current_speed_kmh:.2f} \
+sp {current_speed_kmh:.2f} rec {speed_data.recommended_speed_now:.1f} dif {(current_speed_kmh - speed_data.recommended_speed_now):.1f} \
+r={speed_data.r:.0f}: {throttle_debug_str}, \
 t {control['throttle']:.3f} \
 br {control['brake']:.3f} \
 st: {control['steer']:.10f}, \
@@ -433,26 +439,7 @@ loc: ({vehicle_location[0]:.2f}, {vehicle_location[1]:.2f}) wp({wpl[0]:.1f}, {wp
             target_waypoint = self.maneuverable_waypoints[new_waypoint_index]
 
         return target_waypoint
-    
-    def waypoint_on_fixed_line(self, current_speed, vehicle_location):
-        if self.current_section == 3:
-            kdd = 0.25
-            distance = np.clip(kdd * current_speed, 44, 70)
-            location, _ = self.waypoint_line.get_lookahead_location(vehicle_location, distance)
-            return self.new_RoarPyWaypoint(location)
-        if self.current_section in [5, 7]:
-            kdd = 0.25
-            distance = np.clip(kdd * current_speed, 30, 70)
-            location, _ = self.waypoint_line.get_lookahead_location(vehicle_location, distance)
-            return self.new_RoarPyWaypoint(location)
-        if self.current_section in [6]:
-            kdd = 0.28
-            distance = np.clip(kdd * current_speed, 30, 70)
-            location, _ = self.waypoint_line.get_lookahead_location(vehicle_location, distance)
-            return self.new_RoarPyWaypoint(location)
 
-        return None
-    
     def new_RoarPyWaypoint(self, location):
         return roar_py_interface.RoarPyWaypoint(location, roll_pitch_yaw=np.ndarray([0, 0, 0]), lane_width=12.0)
 

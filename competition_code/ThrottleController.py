@@ -45,6 +45,8 @@ class ThrottleController:
         self.tick_counter = 0
         self.previous_speed = 1.0
         self.brake_ticks = 0
+        self.prev_brake = deque([0]*20, maxlen=20)
+        self.prev_throttle = deque([0]*20, maxlen=20)
         self.prev_locations = deque(maxlen=20)
         self.current_location_idx = 0
         self.location_and_radius = self.load_location_and_radius_data(
@@ -62,10 +64,10 @@ class ThrottleController:
             current_location, self.current_location_idx, self.location_and_radius)
 
         if current_section in [3]:
-            throttle, brake, speed_data = self.get_throttle_and_brake_2(
+            throttle, brake, speed_data, debug_str = self.get_throttle_and_brake_2(
                 current_location, current_speed, current_section, additional_waypoints)
         else:
-           throttle, brake, speed_data = self.get_throttle_and_brake(
+           throttle, brake, speed_data, debug_str = self.get_throttle_and_brake(
                 current_location, current_speed, current_section, waypoints)
 
         gear = max(1, int(current_speed / 60))
@@ -79,11 +81,46 @@ class ThrottleController:
 
         self.prev_locations.appendleft(current_location)
         self.previous_speed = current_speed
+
+        # ------- NEW stuff ----------
+        br_count = self.num_ticks_with_brake_on()
+        speed_excess = current_speed - speed_data.recommended_speed_now
+        if current_section == 3:
+            if 0 < self.brake_ticks and self.brake_ticks < 5 and speed_excess < 8 and br_count > 5:
+                throttle = 0.2
+        elif current_section == 4:
+            if 0 < self.brake_ticks and self.brake_ticks < 5 and speed_excess < 8 and br_count > 4:
+                prev_throttle = max(0.3, self.prev_throttle[0])
+                throttle = prev_throttle + 0.03
+        elif current_section == 6:
+            if 0 < self.brake_ticks and self.brake_ticks < 3 and speed_excess < 8 and br_count > 5:
+                # prev_throttle = max(0.27, self.prev_throttle[0])
+                # throttle = prev_throttle + 0.03
+                throttle = 0.3
+        elif current_section == 9 and current_speed < 150:
+            if 0 < self.brake_ticks and self.brake_ticks < 8 and speed_excess < 20 and br_count > 5:
+                prev_throttle = max(0.3, self.prev_throttle[0])
+                throttle = prev_throttle + 0.06
+        elif 0 < self.brake_ticks and self.brake_ticks < 5 and speed_excess < 8 and br_count > 5:
+            prev_throttle = max(0.3, self.prev_throttle[0])
+            throttle = prev_throttle + 0.03
+
         if self.brake_ticks > 0 and brake > 0:
             self.brake_ticks -= 1
 
         # throttle = 0.05 * (100 - current_speed)
-        return throttle, brake, gear, speed_data
+        self.prev_throttle.appendleft(throttle)
+        self.prev_brake.appendleft(brake)
+        return throttle, brake, gear, speed_data, debug_str
+    
+    def num_ticks_with_brake_on(self):
+        count = 0
+        for b in self.prev_brake:
+            if b > 0:
+                count += 1
+            else:
+                return count
+        return count
 
     def get_throttle_and_brake(
         self, current_location, current_speed, current_section, waypoints
@@ -155,7 +192,11 @@ class ThrottleController:
 
         throttle, brake = self.speed_data_to_throttle_and_brake(update)
         self.dprint("--- throt " + str(throttle) + " brake " + str(brake) + "---")
-        return throttle, brake, update
+        debug_str = ""
+        for i, sd in enumerate(speed_data):
+            debug_str += f"R{i}={speed_data[i].r:.0f} "
+
+        return throttle, brake, update, debug_str
 
     def speed_data_to_throttle_and_brake(self, speed_data: SpeedData):
         """
@@ -201,16 +242,10 @@ class ThrottleController:
                 # if speed is not decreasing fast, hit the brake.
                 if self.brake_ticks <= 0 and speed_change < 2.5:
                     # start braking, and set for how many ticks to brake
-                    self.brake_ticks = (
-                        round(
-                            (
-                                speed_data.current_speed
-                                - speed_data.recommended_speed_now
-                            )
-                            / 3
-                        )
-                    )
+                    self.brake_ticks = round((speed_data.current_speed - speed_data.recommended_speed_now) / 3)
+                    self.brake_ticks = min(8, self.brake_ticks)
                     # self.brake_ticks = 1, or (1 or 2 but not more)
+                    # print(f"tick {self.tick_counter} set brake_ticks={self.brake_ticks} s {speed_data.current_speed:.1f} rec {speed_data.recommended_speed_now:.1f} s-ch {speed_change:.1f}")
                     self.dprint(
                         "tb: tick "
                         + str(self.tick_counter)
@@ -255,13 +290,11 @@ class ThrottleController:
                         + " brake: throttle down: sp_ch="
                         + str(percent_speed_change)
                     )
-                    return (
-                        throttle_to_maintain * throttle_decrease_multiple,
-                        0,
-                    )  # coast, to slow down
+                    # print(f"light thr {throttle_to_maintain * throttle_decrease_multiple:1.2f} tick {str(self.tick_counter)}")
+                    return (1, 0.6)  # light break, while keeping throttle on.
                 else:
-                    # self.dprint("tb: tick " + str(self.tick_counter) + " brake: throttle maintain: sp_ch=" + str(percent_speed_change))
-                    return throttle_to_maintain, 0
+                    # print(f"extra light br {percent_of_max:1.2f} tick {str(self.tick_counter)}")
+                    return (1, 0.1)  # light break, while keeping throttle on.
         else:
             self.brake_ticks = 0  # done slowing down. clear brake_ticks
             # Speed up
@@ -522,14 +555,16 @@ class ThrottleController:
             if distances[i] > break_early_d:
                 distances[i] -= break_early_d
 
+        debug_str = ""
         for ind in range(num_radiuses):
             target_speed = self.get_target_speed_new(radius[ind], current_section, current_location)
             speed_data.append(
               self.speed_for_turn_new(ind, radius[ind], distances[ind], target_speed, current_speed, current_section))
+            debug_str += f"r{ind}={radius[ind]:.0f} "
 
         update = self.select_speed(speed_data)
         throttle, brake = self.speed_data_to_throttle_and_brake(update)
-        return throttle, brake, update
+        return throttle, brake, update, debug_str
     
     def sample_locations(self, current_location):
         increments = [10] * 19
