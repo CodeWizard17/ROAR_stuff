@@ -24,8 +24,13 @@ class WaypointLine:
             prev_ind = ind
             prev_dist = dist
         
-        print(f"return t_loc {target_location[0]}, {target_location[1]} ind{prev_ind} dist{prev_dist}")
-        return target_location
+        if prev_dist > 50:
+            for i in range(0, loc_len, 5):
+                dist = np.linalg.norm(target_location[:2] - self.line_locations[i][:2])
+                if dist < prev_dist:
+                    prev_dist = dist
+                    prev_ind = i
+        return prev_ind
 
     def get_lookahead_location(self, current_location, distance):
         loc_len = len(self.line_locations)
