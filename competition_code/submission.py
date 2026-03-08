@@ -214,9 +214,13 @@ class RoarCompetitionSolution:
         if self.current_section  not in [0, 9]:
             waypoint_to_follow_location = snap_to_line_location
 
-        # Pure pursuit controller to steer the vehicle
+        # Stanley lateral controller
+        self.lat_controller.K = 2.0
+        nearest_waypoint = self.maneuverable_waypoints[self.current_waypoint_idx]
         steer_control, steer_debug = self.lat_controller.run(
-            vehicle_location, vehicle_rotation, waypoint_to_follow_location, self.current_waypoint_idx
+            vehicle_location, vehicle_rotation,
+            nearest_waypoint.location, waypoint_to_follow_location,
+            self.current_waypoint_idx, vehicle_velocity_norm,
         )
 
         # Custom controller to control the vehicle's speed
@@ -237,57 +241,43 @@ class RoarCompetitionSolution:
             additional_waypoints,
         )
 
-        steerMultiplier = round((current_speed_kmh + 0.001) / 120, 3)
-        
+        # Braking zones - let ThrottleController handle most sections
+        if 420 <= self.current_waypoint_idx <= 450 and current_speed_kmh > 120:
+            throttle = 0
+            brake = 0.7
+        if 555 <= self.current_waypoint_idx <= 592 and current_speed_kmh > 155:
+            throttle = 0
+            brake = 0.5
+        if 590 <= self.current_waypoint_idx <= 760 and current_speed_kmh > 130:
+            throttle = 0
+            brake = 0.75
         if self.current_waypoint_idx in [800, 801]:
-            self.s3_mult = 0.85
             if current_speed_kmh >= 162:
-                self.s3_mult = 0.95
                 if not self.previous_brake:
                     throttle = 0
                     brake = 1
                     self.previous_brake = True
-            if current_speed_kmh < 160:
-                self.s3_mult = 0.75
-            print(f"spd {current_speed_kmh} mult{self.s3_mult} sec={self.current_section}")
         if self.current_waypoint_idx in [802, 803, 804]:
             self.previous_brake = False
+        if 1280 <= self.current_waypoint_idx <= 1320 and current_speed_kmh > 145:
+            throttle = 0
+            brake = 0.75
+        if 1750 <= self.current_waypoint_idx <= 1840 and current_speed_kmh > 115:
+            throttle = 0
+            brake = 0.85
 
-        if self.current_section == 2:
-            steerMultiplier *= 1.2
-        if self.current_section in [3]:
-            if self.current_waypoint_idx < 813:
-                steerMultiplier *= self.s3_mult
-            elif self.current_waypoint_idx < 845:
-                steerMultiplier *= 1.45
-            else:
-                steerMultiplier *= 1
-                self.s3_mult = 1
+        steer_value = np.clip(steer_control, -1, 1)
+        if 820 < self.current_waypoint_idx < 837:
+            steer_value = np.clip(steer_control, -0.007, 1)
 
-        if self.current_section == 4:
-            steerMultiplier = min(1.45, steerMultiplier * 1.65)
-        if self.current_section == 5:
-            steerMultiplier *= 1.1
-        if self.current_section in [6]:
-            steerMultiplier = np.clip(steerMultiplier * 3.2, 3.1, 7)
-        if self.current_section == 7:
-            steerMultiplier *= 1.75
-
-        if self.current_section == 9:
-            if self.current_waypoint_idx > 2580:
-                steerMultiplier = max(steerMultiplier, 1.7)
-            else:
-                steerMultiplier = max(steerMultiplier, 1.5)
-
-        steer_value = np.clip(steer_control * steerMultiplier, -1, 1)
-        # sec3
-        if  820 < self.current_waypoint_idx < 837:
-            steer_value = np.clip(steer_control * steerMultiplier, -0.007, 1)
+        if 2540 <= self.current_waypoint_idx <= 2626 and current_speed_kmh > 120:
+            throttle = 0
+            brake = 0.70
         if self.current_waypoint_idx in [2381, 2382] and current_speed_kmh > 257:
             if not self.previous_brake:
-              throttle = 0
-              brake = 1
-              self.previous_brake = True
+                throttle = 0
+                brake = 1
+                self.previous_brake = True
         if self.current_waypoint_idx in [2383, 2384, 2385]:
             self.previous_brake = False
 
@@ -320,7 +310,7 @@ r={speed_data.r:.0f}: {throttle_debug_str}, \
 t {control['throttle']:.3f} \
 br {control['brake']:.3f} \
 st: {control['steer']:.10f}, \
-{steer_control:.6f}, {steerMultiplier:.6f} trgt wp:ind {nextWaypointIndex} {nextWaypointIndex - self.current_waypoint_idx} {d:.1f} \
+{steer_control:.6f} trgt wp:ind {nextWaypointIndex} {nextWaypointIndex - self.current_waypoint_idx} {d:.1f} \
 loc: ({vehicle_location[0]:.2f}, {vehicle_location[1]:.2f}) wp({wpl[0]:.1f}, {wpl[1]:.1f}) {steer_debug} section {self.current_section}"
             dbg_str2.append(s)
 
